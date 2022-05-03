@@ -49,4 +49,9 @@ const (
 	WorkLoadHashCodeDigit = 10
 	PodHashCodeDigit      = 5
 	MaxNumNewNode         = 100
+
+	EvictPodQueueCap   = 42
+	EvictPodStats      = "simon/victim-number"
+	CpuPerGpuThreshold = 6
+	CpuNodeScoreScale  = 2
 )

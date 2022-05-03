@@ -66,7 +66,7 @@ func (d *DeviceInfo) GetUsedGpuMemory() (gpuMem int64) {
 }
 
 func (d *DeviceInfo) addPod(pod *v1.Pod) {
-	//log.Printf("debug: dev.addPod() Pod %s in ns %s with the GPU ID %d will be added to device map", pod.Name, pod.Namespace, d.idx)
+	//log.Printf("debug: dev.addPod() Pod %s in ns %s with the GPU ID %d will be added to device map", pod.Name, pod.Namespace, d.Idx)
 	d.rwmu.Lock()
 	defer d.rwmu.Unlock()
 	d.podMap[pod.UID] = pod
@@ -74,7 +74,7 @@ func (d *DeviceInfo) addPod(pod *v1.Pod) {
 }
 
 func (d *DeviceInfo) removePod(pod *v1.Pod) {
-	//log.Printf("debug: dev.removePod() Pod %s in ns %s with the GPU ID %d will be removed from device map", pod.Name, pod.Namespace, d.idx)
+	//log.Printf("debug: dev.removePod() Pod %s in ns %s with the GPU ID %d will be removed from device map", pod.Name, pod.Namespace, d.Idx)
 	d.rwmu.Lock()
 	defer d.rwmu.Unlock()
 	delete(d.podMap, pod.UID)
@@ -82,8 +82,8 @@ func (d *DeviceInfo) removePod(pod *v1.Pod) {
 }
 
 type DeviceInfoBrief struct {
-	idx            int
-	model          string
+	Idx            int
+	Model          string
 	PodList        []string
 	GpuTotalMemory resource.Quantity
 	GpuUsedMemory  resource.Quantity
@@ -92,7 +92,7 @@ type DeviceInfoBrief struct {
 func (d *DeviceInfo) ExportDeviceInfoBrief() *DeviceInfoBrief {
 	var podList []string
 	for _, pod := range d.podMap {
-		podList = append(podList, fmt.Sprintf("%s:%s", pod.Namespace, pod.Name))
+		podList = append(podList, utils.GeneratePodKey(pod))
 	}
 	gpuUsedMem, _ := resource.ParseQuantity(fmt.Sprintf("%dMi", d.GetUsedGpuMemory()/(1024*1024)))
 	gpuTotalMem, _ := resource.ParseQuantity(fmt.Sprintf("%dMi", d.totalGpuMem/(1024*1024)))

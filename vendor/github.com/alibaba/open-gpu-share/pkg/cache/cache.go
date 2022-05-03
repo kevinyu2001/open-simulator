@@ -1,6 +1,7 @@
 package cache
 
 import (
+	"errors"
 	"sync"
 
 	"github.com/alibaba/open-gpu-share/pkg/utils"
@@ -19,6 +20,9 @@ type NodePodGetter interface {
 	NodeGet(name string) (*v1.Node, error)
 	PodGet(name string, namespace string) (*v1.Pod, error)
 }
+
+// a GPU group include 2 GPUs, which is the granularity to allocate GPU
+type GpuGroupId int
 
 func NewSchedulerCache(getter NodePodGetter) *SchedulerCache {
 	return &SchedulerCache{
@@ -92,7 +96,7 @@ func (cache *SchedulerCache) AddOrUpdatePod(pod *v1.Pod) error {
 	podCopy := pod.DeepCopy()
 	if n.addOrUpdatePod(podCopy) {
 		// put it into known pod
-		cache.rememberPod(pod.UID, podCopy)
+		cache.rememberPod(podCopy)
 	} else {
 		//log.Printf("debug: pod %s in ns %s's gpu id is %d, it's illegal, skip", pod.Name, pod.Namespace, utils.GetGpuIdFromAnnotation(pod))
 	}
@@ -157,16 +161,102 @@ func (cache *SchedulerCache) forgetPod(uid types.UID) {
 	delete(cache.knownPods, uid)
 }
 
-func (cache *SchedulerCache) rememberPod(uid types.UID, pod *v1.Pod) {
+func (cache *SchedulerCache) rememberPod(pod *v1.Pod) {
 	cache.nLock.Lock()
 	defer cache.nLock.Unlock()
 	cache.knownPods[pod.UID] = pod
 }
 
-func (cache *SchedulerCache) ExportGpuNodeInfoAsNodeGpuInfo(nodeName string) (*NodeGpuInfo, error) {
+func (cache *SchedulerCache) ExportGpuNodeInfoAsStr(nodeName string) (*GpuNodeInfoStr, error) {
 	if gpuNodeInfo, err := cache.GetGpuNodeInfo(nodeName); err != nil {
-		return gpuNodeInfo.ExportGpuNodeInfoAsNodeGpuInfo(), nil
+		return gpuNodeInfo.ExportGpuNodeInfoAsStr(), nil
 	} else {
 		return nil, err
 	}
+}
+
+func (cache *SchedulerCache) GpuNodeAdd(node *v1.Node) error {
+	if nodeInfo, ok := cache.nodes[node.Name]; ok {
+		nodeInfo.rwmu.Lock()
+		defer nodeInfo.rwmu.Unlock()
+		nodeInfo.gpuCount = utils.GetGpuCountInNode(node)
+		nodeInfo.gpuTotalMemory = utils.GetTotalGpuMemory(node)
+		nodeInfo.node = node
+		currentGpuNum := len(nodeInfo.devs)
+		for index := currentGpuNum; index < nodeInfo.gpuCount; index++ {
+			nodeInfo.devs[index] = newDeviceInfo(index,
+				nodeInfo.gpuTotalMemory/int64(nodeInfo.gpuCount),
+				utils.GetGpuModel(node))
+		}
+	}
+	return nil
+}
+
+// modify the node, increase or decrease the number of GPUs allocated
+func (cache *SchedulerCache) GpuNodeRemove(node *v1.Node, removeGpuGroup []GpuGroupId) error {
+	if !cache.ValidateGpuRemove(node, removeGpuGroup) {
+		return errors.New("remove illegally")
+	}
+
+	if nodeInfo, ok := cache.nodes[node.Name]; ok {
+		nodeInfo.rwmu.Lock()
+		defer nodeInfo.rwmu.Unlock()
+		nodeInfo.gpuCount = utils.GetGpuCountInNode(node)
+		nodeInfo.gpuTotalMemory = utils.GetTotalGpuMemory(node)
+		nodeInfo.node = node
+
+		indexPointer := 0
+		currentGpuNum := len(nodeInfo.devs)
+		for index := 0; index < currentGpuNum; index++ {
+			if !inRemoveNodes(index, removeGpuGroup) {
+				nodeInfo.devs[indexPointer] = nodeInfo.devs[index]
+				nodeInfo.devs[indexPointer].rwmu.Lock()
+				nodeInfo.devs[indexPointer].idx = indexPointer
+				nodeInfo.devs[indexPointer].rwmu.Unlock()
+				indexPointer++
+			}
+		}
+
+		for i := nodeInfo.gpuCount; i < currentGpuNum; i++ {
+			delete(nodeInfo.devs, i)
+		}
+	}
+	return nil
+}
+
+func inRemoveNodes(index int, removeGpuGroup []GpuGroupId) bool {
+	for _, groupId := range removeGpuGroup {
+		if index == 2*int(groupId) || index == 2*int(groupId)+1 {
+			return true
+		}
+	}
+	return false
+}
+
+// check if there are pods utilizing the GPUs which will be removed
+func (cache *SchedulerCache) ValidateGpuRemove(node *v1.Node, removeGpuGroup []GpuGroupId) bool {
+	var nodeInfo *GpuNodeInfo
+	nodeInfo, ok := cache.nodes[node.Name]
+	if !ok {
+		// no such node in cache, which means that
+		// no pod has ever been scheduled on this node
+		return true
+	}
+	for _, groupId := range removeGpuGroup {
+		if deviceInfo, ok := nodeInfo.devs[2*int(groupId)]; !ok {
+			return false
+		} else {
+			if len(deviceInfo.podMap) != 0 {
+				return false
+			}
+		}
+		if deviceInfo, ok := nodeInfo.devs[2*int(groupId)+1]; !ok {
+			return false
+		} else {
+			if len(deviceInfo.podMap) != 0 {
+				return false
+			}
+		}
+	}
+	return true
 }

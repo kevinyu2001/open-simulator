@@ -449,7 +449,7 @@ func reportClusterInfo(nodeStatuses []simulator.NodeStatus, extendedResources []
 				node := status.Node
 				podList = append(podList, status.Pods...)
 				if nodeGpuInfoStr, exist := node.Annotations[simontype.AnnoNodeGpuShare]; exist {
-					var nodeGpuInfo gpusharecache.NodeGpuInfo
+					var nodeGpuInfo gpusharecache.GpuNodeInfoStr
 					if err := ffjson.Unmarshal([]byte(nodeGpuInfoStr), &nodeGpuInfo); err != nil {
 						klog.Errorf("failed to unmarshal storage information of node(%s: %v", node.Name, err)
 						continue

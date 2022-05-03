@@ -3,9 +3,11 @@ package simulator
 import (
 	"context"
 	"fmt"
-	"sort"
-	"strings"
-
+	"github.com/alibaba/open-simulator/pkg/algo"
+	simonplugin "github.com/alibaba/open-simulator/pkg/simulator/plugin"
+	simontype "github.com/alibaba/open-simulator/pkg/type"
+	"github.com/alibaba/open-simulator/pkg/utils"
+	log "github.com/sirupsen/logrus"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -17,11 +19,9 @@ import (
 	"k8s.io/kubernetes/pkg/scheduler"
 	"k8s.io/kubernetes/pkg/scheduler/framework"
 	frameworkruntime "k8s.io/kubernetes/pkg/scheduler/framework/runtime"
-
-	"github.com/alibaba/open-simulator/pkg/algo"
-	simonplugin "github.com/alibaba/open-simulator/pkg/simulator/plugin"
-	simontype "github.com/alibaba/open-simulator/pkg/type"
-	"github.com/alibaba/open-simulator/pkg/utils"
+	"sort"
+	"strconv"
+	"strings"
 )
 
 // Simulator is used to simulate a cluster and pods scheduling
@@ -36,6 +36,7 @@ type Simulator struct {
 
 	// stopCh
 	simulatorStop chan struct{}
+	evictPodQueue chan *corev1.Pod
 
 	// context
 	ctx        context.Context
@@ -47,6 +48,7 @@ type Simulator struct {
 // status captures reason why one pod fails to be scheduled
 type status struct {
 	stopReason string
+	evictNum   int
 }
 
 type simulatorOptions struct {
@@ -87,6 +89,7 @@ func New(opts ...Option) (Interface, error) {
 		// externalclient:  kubeClient,
 		fakeclient:      fakeClient,
 		simulatorStop:   make(chan struct{}),
+		evictPodQueue:   make(chan *corev1.Pod, simontype.EvictPodQueueCap),
 		informerFactory: sharedInformerFactory,
 		ctx:             ctx,
 		cancelFunc:      cancel,
@@ -111,6 +114,11 @@ func New(opts ...Option) (Interface, error) {
 					if pod, ok := newObj.(*corev1.Pod); ok {
 						// fmt.Printf("test update pod %s/%s\n", pod.Namespace, pod.Name)
 						sim.update(pod)
+					}
+				},
+				DeleteFunc: func(obj interface{}) {
+					if pod, ok := obj.(*corev1.Pod); ok {
+						sim.delete(pod)
 					}
 				},
 			},
@@ -217,7 +225,8 @@ func (sim *Simulator) runScheduler() {
 // Run starts to schedule pods
 func (sim *Simulator) schedulePods(pods []*corev1.Pod) ([]UnscheduledPod, error) {
 	var failedPods []UnscheduledPod
-	for _, pod := range pods {
+	for index := 0; index < len(pods); index++ {
+		pod := pods[index]
 		if _, err := sim.fakeclient.CoreV1().Pods(pod.Namespace).Create(context.Background(), pod, metav1.CreateOptions{}); err != nil {
 			return nil, fmt.Errorf("%s %s/%s: %s", simontype.CreatePodError, pod.Namespace, pod.Name, err.Error())
 		}
@@ -236,7 +245,11 @@ func (sim *Simulator) schedulePods(pods []*corev1.Pod) ([]UnscheduledPod, error)
 				Pod:    pod,
 				Reason: sim.status.stopReason,
 			})
-			sim.status.stopReason = ""
+		}
+
+		victimNum := sim.status.evictNum
+		for i := 0; i < victimNum; i++ {
+			pods = append(pods, <-sim.evictPodQueue)
 		}
 	}
 	return failedPods, nil
@@ -245,6 +258,7 @@ func (sim *Simulator) schedulePods(pods []*corev1.Pod) ([]UnscheduledPod, error)
 func (sim *Simulator) Close() {
 	sim.cancelFunc()
 	close(sim.simulatorStop)
+	close(sim.evictPodQueue)
 }
 
 func (sim *Simulator) syncClusterResourceList(resourceList ResourceTypes) (*SimulateResult, error) {
@@ -332,8 +346,10 @@ func (sim *Simulator) syncClusterResourceList(resourceList ResourceTypes) (*Simu
 
 func (sim *Simulator) update(pod *corev1.Pod) {
 	var stop bool = false
+	var evict bool = false
 	var stopReason string
 	var stopMessage string
+	var evictNum int
 	for _, podCondition := range pod.Status.Conditions {
 		// log.Infof("podCondition %v", podCondition)
 		stop = podCondition.Type == corev1.PodScheduled && podCondition.Status == corev1.ConditionFalse && podCondition.Reason == corev1.PodReasonUnschedulable
@@ -344,11 +360,34 @@ func (sim *Simulator) update(pod *corev1.Pod) {
 			break
 		}
 	}
+	if numStr, ok := pod.ObjectMeta.Annotations[simontype.EvictPodStats]; ok {
+		evict = true
+		var err error
+		if evictNum, err = strconv.Atoi(numStr); err != nil {
+			log.Infof("evict number cannot convert to integer: %v", numStr)
+			evictNum = 0
+		}
+	}
+
 	// Only for pending pods provisioned by simon
 	if stop {
 		sim.status.stopReason = fmt.Sprintf("failed to schedule pod (%s/%s): %s: %s", pod.Namespace, pod.Name, stopReason, stopMessage)
+	} else {
+		sim.status.stopReason = ""
+	}
+	if evict {
+		sim.status.evictNum = evictNum
+	} else {
+		sim.status.evictNum = 0
 	}
 	sim.simulatorStop <- struct{}{}
+}
+
+func (sim *Simulator) delete(pod *corev1.Pod) {
+	pod.Spec.NodeName = ""
+	pod.Status.Phase = corev1.PodPending
+	pod.Status.Conditions = pod.Status.Conditions[:0]
+	sim.evictPodQueue <- pod
 }
 
 // WithKubeConfig sets kubeconfig for Simulator, the default value is ""

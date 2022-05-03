@@ -6,4 +6,6 @@ const (
 	DeviceIndex  = "alibabacloud.com/gpu-index"      // Exists when the pod are assigned/predefined to a GPU device
 	AssumeTime   = "alibabacloud.com/assume-time"    // To retrieve the scheduling latency
 	ModelName    = "alibabacloud.com/gpu-card-model" // node annotation
+	PodNsNameSep = "/"
+	DevIdSep     = "-"
 )

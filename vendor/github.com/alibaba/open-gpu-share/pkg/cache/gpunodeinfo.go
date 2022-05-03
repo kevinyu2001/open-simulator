@@ -280,7 +280,7 @@ func (n *GpuNodeInfo) AllocateGpuId(pod *v1.Pod) (candDevId string, found bool) 
 		if reqGpuId == int(reqGpuNum) {
 			candDevId = strconv.Itoa(candDevIdList[0])
 			for _, id := range candDevIdList[1:] {
-				candDevId += fmt.Sprintf("-%d", id)
+				candDevId += fmt.Sprintf("%s%d", utils.DevIdSep, id)
 			}
 			found = true
 		}
@@ -299,12 +299,12 @@ func (n *GpuNodeInfo) getAvailableGpus() (availableGpus map[int]int64) {
 			availableGpus[id] = totalGpuMem - usedGpuMem
 		}
 	}
-	//log.Printf("info: available GPU list %v before removing unhealty GPUs", availableGpus)
+	//log.Printf("info: available GPU list %v before removing unhealthy GPUs", availableGpus)
 	//for id, _ := range unhealthyGpus {
-	//	log.Printf("info: delete dev %d from availble GPU list", id)
+	//	log.Printf("info: delete dev %d from available GPU list", id)
 	//	delete(availableGpus, id)
 	//}
-	//log.Printf("info: available GPU list %v after removing unhealty GPUs", availableGpus)
+	//log.Printf("info: available GPU list %v after removing unhealthy GPUs", availableGpus)
 
 	return availableGpus
 }
@@ -370,7 +370,7 @@ func (n *GpuNodeInfo) getUnhealthyGpus() (unhealthyGpus map[int]bool) {
 //	return json.Marshal(patchAnnotations)
 //}
 
-type NodeGpuInfo struct {
+type GpuNodeInfoStr struct {
 	DevsBrief      map[int]*DeviceInfoBrief
 	GpuCount       int
 	GpuAllocatable int
@@ -379,18 +379,18 @@ type NodeGpuInfo struct {
 	NumPods        int
 }
 
-func (n *GpuNodeInfo) ExportGpuNodeInfoAsNodeGpuInfo() *NodeGpuInfo {
+func (n *GpuNodeInfo) ExportGpuNodeInfoAsStr() *GpuNodeInfoStr {
 	var numPods int
 	gpuAllocatable := n.gpuCount
 	devsBrief := map[int]*DeviceInfoBrief{}
 	for idx, d := range n.devs {
 		dib := d.ExportDeviceInfoBrief()
-		if dib.GpuUsedMemory.Value() > 0 {
+		if dib.GpuUsedMemory.Value() >= dib.GpuTotalMemory.Value() {
 			gpuAllocatable -= 1
 		}
 		devsBrief[idx] = dib
 		numPods += len(dib.PodList)
 	}
 	gpuTotalMem, _ := resource.ParseQuantity(fmt.Sprintf("%dMi", n.gpuTotalMemory/(1024*1024)))
-	return &NodeGpuInfo{devsBrief, n.gpuCount, gpuAllocatable, n.model, gpuTotalMem, numPods}
+	return &GpuNodeInfoStr{devsBrief, n.gpuCount, gpuAllocatable, n.model, gpuTotalMem, numPods}
 }

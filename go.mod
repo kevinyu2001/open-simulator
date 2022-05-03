@@ -27,7 +27,7 @@ require (
 )
 
 replace (
-	github.com/alibaba/open-gpu-share => github.com/qzweng/open-gpu-share v0.2.2
+	github.com/alibaba/open-gpu-share => /Users/yuhaoxuan/ali-intern/open-gpu-share
 	github.com/googleapis/gnostic => github.com/googleapis/gnostic v0.4.1
 	google.golang.org/grpc => google.golang.org/grpc v1.26.0
 	k8s.io/api => k8s.io/api v0.20.5
@@ -56,3 +56,5 @@ replace (
 	k8s.io/mount-utils => k8s.io/mount-utils v0.20.5
 	k8s.io/sample-apiserver => k8s.io/sample-apiserver v0.20.5
 )
+
+replace github.com/alibaba/open-simulator => /Users/yuhaoxuan/ali-intern/open-simulator

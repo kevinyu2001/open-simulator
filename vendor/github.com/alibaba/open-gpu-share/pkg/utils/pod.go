@@ -102,7 +102,7 @@ func GpuIdStrToIntList(id string) (idl []int, err error) {
 	if len(id) <= 0 {
 		return idl, nil
 	}
-	res := strings.Split(id, "-") // like "2-3-4" -> [2, 3, 4]
+	res := strings.Split(id, DevIdSep) // like "2-3-4" -> [2, 3, 4]
 	for _, idxStr := range res {
 		if idx, e := strconv.Atoi(idxStr); e == nil {
 			idl = append(idl, idx)
@@ -124,4 +124,12 @@ func GetUpdatedPodAnnotationSpec(oldPod *v1.Pod, devId string) (newPod *v1.Pod) 
 	newPod.ObjectMeta.Annotations[DeviceIndex] = devId
 	newPod.ObjectMeta.Annotations[AssumeTime] = fmt.Sprintf("%d", now.UnixNano())
 	return newPod
+}
+
+func GeneratePodKey(pod *v1.Pod) string {
+	return GeneratePodKeyByName(pod.Namespace, pod.Name)
+}
+
+func GeneratePodKeyByName(namespace, name string) string {
+	return namespace + PodNsNameSep + name
 }

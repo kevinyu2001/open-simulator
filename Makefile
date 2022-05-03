@@ -1,4 +1,4 @@
-GO111MODULE=off
+GO111MODULE=on
 GOARCH=amd64
 GOOS=darwin
 # GOOS=linux
