@@ -254,6 +254,15 @@ func (plugin *GpuSharePlugin) Bind(ctx context.Context, state *framework.CycleSt
 		return framework.NewStatus(framework.Error, fmt.Sprintf("Unable to add new pod: %v", err))
 	}
 	delete(plugin.podToUpdateCacheMap, getPodMapKey(pod)) // avoid memory leakage
+
+	node, err := plugin.fakeclient.CoreV1().Nodes().Get(context.Background(), podCopy.Spec.NodeName, metav1.GetOptions{})
+	if err != nil {
+		klog.Errorf("fake get error %v", err)
+	}
+	if err = plugin.IswReallocate(node, pod); err != nil {
+		klog.Errorf("ISW reallocate error %v", err)
+	}
+
 	//klog.Infof("Allocate() ---- pod %s in ns %s is allocated to node %s ----", podCopy.Name, podCopy.Namespace, podCopy.Spec.NodeName)
 	return nil
 }
