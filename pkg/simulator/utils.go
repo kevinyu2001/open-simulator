@@ -231,9 +231,11 @@ func GetAndSetSchedulerConfig(schedulerConfig string) (*config.CompletedConfig, 
 			{
 				Name: simontype.SimonPluginName,
 			},
-			{
-				Name: simontype.OpenLocalPluginName,
-			},
+			/*
+				{
+					Name: simontype.OpenLocalPluginName,
+				},
+			*/
 			{
 				Name: simontype.OpenGpuSharePluginName,
 			},
@@ -241,11 +243,18 @@ func GetAndSetSchedulerConfig(schedulerConfig string) (*config.CompletedConfig, 
 	}
 	kcfg.Profiles[0].Plugins.Filter = &kubeschedulerconfig.PluginSet{
 		Enabled: []kubeschedulerconfig.Plugin{
-			{
-				Name: simontype.OpenLocalPluginName,
-			},
+			/*
+				{
+					Name: simontype.OpenLocalPluginName,
+				},
+			*/
 			{
 				Name: simontype.OpenGpuSharePluginName,
+			},
+		},
+		Disabled: []kubeschedulerconfig.Plugin{
+			{
+				Name: defaultbinder.Name,
 			},
 		},
 	}
@@ -258,9 +267,11 @@ func GetAndSetSchedulerConfig(schedulerConfig string) (*config.CompletedConfig, 
 	}
 	kcfg.Profiles[0].Plugins.Bind = &kubeschedulerconfig.PluginSet{
 		Enabled: []kubeschedulerconfig.Plugin{
-			{
-				Name: simontype.OpenLocalPluginName,
-			},
+			/*
+				{
+					Name: simontype.OpenLocalPluginName,
+				},
+			*/
 			{
 				Name: simontype.OpenGpuSharePluginName,
 			},

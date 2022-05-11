@@ -22,6 +22,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Simulator is used to simulate a cluster and pods scheduling
@@ -136,9 +137,11 @@ func New(opts ...Option) (Interface, error) {
 		simontype.SimonPluginName: func(configuration runtime.Object, f framework.Handle) (framework.Plugin, error) {
 			return simonplugin.NewSimonPlugin(sim.fakeclient, configuration, f)
 		},
-		simontype.OpenLocalPluginName: func(configuration runtime.Object, f framework.Handle) (framework.Plugin, error) {
-			return simonplugin.NewLocalPlugin(fakeClient, storagev1Informers, configuration, f)
-		},
+		/*
+			simontype.OpenLocalPluginName: func(configuration runtime.Object, f framework.Handle) (framework.Plugin, error) {
+				return simonplugin.NewLocalPlugin(fakeClient, storagev1Informers, configuration, f)
+			},
+		*/
 		simontype.OpenGpuSharePluginName: func(configuration runtime.Object, f framework.Handle) (framework.Plugin, error) {
 			return simonplugin.NewGpuSharePlugin(fakeClient, configuration, f)
 		},
@@ -224,6 +227,7 @@ func (sim *Simulator) runScheduler() {
 
 // Run starts to schedule pods
 func (sim *Simulator) schedulePods(pods []*corev1.Pod) ([]UnscheduledPod, error) {
+	time.Sleep(500 * time.Millisecond)
 	var failedPods []UnscheduledPod
 	for index := 0; index < len(pods); index++ {
 		pod := pods[index]
@@ -251,6 +255,7 @@ func (sim *Simulator) schedulePods(pods []*corev1.Pod) ([]UnscheduledPod, error)
 		for i := 0; i < victimNum; i++ {
 			pods = append(pods, <-sim.evictPodQueue)
 		}
+		time.Sleep(1000 * time.Millisecond)
 	}
 	return failedPods, nil
 }

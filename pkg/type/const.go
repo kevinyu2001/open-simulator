@@ -52,6 +52,6 @@ const (
 
 	EvictPodQueueCap   = 42
 	EvictPodStats      = "simon/victim-number"
-	CpuPerGpuThreshold = 6
+	CpuPerGpuThreshold = 12
 	CpuNodeScoreScale  = 2
 )

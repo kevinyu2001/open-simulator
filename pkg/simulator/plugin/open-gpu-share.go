@@ -28,6 +28,7 @@ type GpuSharePlugin struct {
 	fakeclient          externalclientset.Interface
 	cache               *gpusharecache.SchedulerCache
 	podToUpdateCacheMap map[string]*corev1.Pod // key: getPodMapKey(): return pod.Namespace+pod.Name
+	iswConfig           IswConfigMap
 }
 
 type NodeConfig struct {
@@ -35,8 +36,11 @@ type NodeConfig struct {
 	gpuNumber int
 }
 
-var IswToNode map[string][]string
-var NodeToIsw map[string]string
+type IswConfigMap struct {
+	Init      bool
+	IswToNode map[string][]string
+	NodeToIsw map[string]string
+}
 
 // Just to check whether the implemented struct fits the interface
 var _ framework.FilterPlugin = &GpuSharePlugin{}
@@ -44,14 +48,10 @@ var _ framework.ScorePlugin = &GpuSharePlugin{}
 var _ framework.ReservePlugin = &GpuSharePlugin{}
 var _ framework.BindPlugin = &GpuSharePlugin{}
 
-//json to IswToNode and NodeToIsw
-func init() {
-
-}
-
 func NewGpuSharePlugin(fakeclient externalclientset.Interface, configuration runtime.Object, f framework.Handle) (framework.Plugin, error) {
 	gpuSharePlugin := &GpuSharePlugin{fakeclient: fakeclient, podToUpdateCacheMap: make(map[string]*corev1.Pod)}
 	gpuSharePlugin.InitSchedulerCache()
+	gpuSharePlugin.iswConfig.Init = false
 	return gpuSharePlugin, nil
 }
 
@@ -97,6 +97,7 @@ func (plugin *GpuSharePlugin) Filter(ctx context.Context, state *framework.Cycle
 // Score Plugin
 // Score invoked at the score extension point.
 func (plugin *GpuSharePlugin) Score(ctx context.Context, state *framework.CycleState, pod *corev1.Pod, nodeName string) (int64, *framework.Status) {
+	log.Printf("score %s for %s", nodeName, pod.Name)
 	podReq, _ := resourcehelper.PodRequestsAndLimits(pod)
 	if len(podReq) == 0 {
 		return framework.MaxNodeScore, framework.NewStatus(framework.Success)
@@ -290,6 +291,32 @@ func (plugin *GpuSharePlugin) InitSchedulerCache() {
 	plugin.cache = gpusharecache.NewSchedulerCache(plugin) // here `plugin` implements the NodePodGetter interface
 }
 
+func (plugin *GpuSharePlugin) InitIswConfig() {
+	if plugin.iswConfig.Init {
+		return
+	}
+	plugin.iswConfig.IswToNode = make(map[string][]string)
+	plugin.iswConfig.NodeToIsw = make(map[string]string)
+	nodeList, err := plugin.fakeclient.CoreV1().Nodes().List(context.Background(), metav1.ListOptions{})
+	if err != nil {
+		log.Printf("unable to list all nodes")
+		return
+	}
+	for _, node := range nodeList.Items {
+		if iswName := gpushareutils.GetIswName(&node); iswName != "N/A" {
+			//log.Printf("add node %s with ISW %s to map", node.Name, iswName)
+			plugin.iswConfig.NodeToIsw[node.Name] = iswName
+		} else {
+			//log.Printf("node %s is not an ISW node, refuse", node.Name)
+		}
+	}
+	for nodeName, iswName := range plugin.iswConfig.NodeToIsw {
+		plugin.iswConfig.IswToNode[iswName] = append(plugin.iswConfig.IswToNode[iswName], nodeName)
+	}
+	plugin.iswConfig.Init = true
+	return
+}
+
 func (plugin *GpuSharePlugin) MakePodCopyReadyForBindUpdate(pod *corev1.Pod, nodeName string) (*corev1.Pod, error) {
 	gpuNodeInfo, err := plugin.cache.GetGpuNodeInfo(nodeName)
 	if err != nil {
@@ -297,6 +324,7 @@ func (plugin *GpuSharePlugin) MakePodCopyReadyForBindUpdate(pod *corev1.Pod, nod
 	}
 
 	devId, found := gpuNodeInfo.AllocateGpuId(pod)
+	log.Printf("%s take use of GPU %s", pod.Name, devId)
 	if !found {
 		err := fmt.Errorf("Cannot find a GPU to allocate pod %s at ns %s", pod.Name, pod.Namespace)
 		return nil, err
@@ -315,6 +343,12 @@ func getPodMapKey(pod *corev1.Pod) string {
 // ISW reallocate GPUs according to pods on these nodes
 func (plugin *GpuSharePlugin) IswReallocate(node *corev1.Node, pod *corev1.Pod) error {
 	// Step 1: find neighbors of the node
+	log.Printf("ISW reallocate when binding %s to %s", pod.Name, node.Name)
+	log.Printf("ISW reallocate step 1")
+	plugin.InitIswConfig()
+	if iswName := gpushareutils.GetIswName(node); iswName == "N/A" {
+		return nil
+	}
 	neighborNames, err := plugin.getNeighborNames(node)
 	if err != nil {
 		return err
@@ -332,14 +366,16 @@ func (plugin *GpuSharePlugin) IswReallocate(node *corev1.Node, pod *corev1.Pod) 
 	}
 
 	// Step 2: determine if the node should give GPUs to other nodes
+	log.Printf("ISW reallocate step 2")
 	var neighborScore = make([]float64, len(neighborList))
 	var moveFlag = false
 	for i, neighbor := range neighborList {
 		if neighbor == node {
-			if neighborScore[i], err = plugin.IswNodeScore(neighbor, pod, 0); err != nil {
+			if neighborScore[i], err = plugin.IswNodeScore(neighbor, nil, 0); err != nil {
 				return err
 			}
 			if neighborScore[i] < simontype.CpuPerGpuThreshold {
+				log.Printf("node's score is %v, ISW reallocate GPUs", neighborScore[i])
 				moveFlag = true
 			}
 			continue
@@ -354,10 +390,12 @@ func (plugin *GpuSharePlugin) IswReallocate(node *corev1.Node, pod *corev1.Pod) 
 	}
 
 	// Step 3: determine how to reallocate GPUs
+	log.Printf("ISW reallocate step 3")
 	var freeGpuGroup []gpusharecache.GpuGroupId
 	if freeGpuGroup, err = plugin.FreeGpuGroup(node); err != nil {
 		return nil
 	}
+	log.Printf("free GPU group: %v", freeGpuGroup)
 
 	// determine how many GPUs should be moved
 	var freeGpu = 2 * int64(len(freeGpuGroup))
@@ -369,11 +407,12 @@ func (plugin *GpuSharePlugin) IswReallocate(node *corev1.Node, pod *corev1.Pod) 
 		moveGpu = freeGpu
 	} else {
 		for moveGpu = 2; moveGpu <= freeGpu; moveGpu += 2 {
-			score, err := plugin.IswNodeScore(node, pod, -moveGpu)
+			score, err := plugin.IswNodeScore(node, nil, -moveGpu)
 			if err != nil {
 				return err
 			}
-			if score > simontype.CpuPerGpuThreshold {
+			log.Printf("when move %v GPUs, node's score is %v", moveGpu, score)
+			if score >= simontype.CpuPerGpuThreshold {
 				break
 			}
 		}
@@ -401,29 +440,47 @@ func (plugin *GpuSharePlugin) IswReallocate(node *corev1.Node, pod *corev1.Pod) 
 		log.Printf("there is no node with enough idle CPUs")
 		return nil
 	}
+	log.Printf("determine to move %v GPUs from %v to %v", moveGpu, node.Name, highestNode.Name)
 
 	// Step 4: update two nodes in fakeclient
 	// you should set gpu-count and gpu-mem as 0
 	// in ISW nodes having no GPU temporarily
+	log.Printf("ISW reallocate step 4")
 	gpuCount := node.Status.Capacity[gpushareutils.CountName]
 	oldGpuCount := gpuCount.Value()
 	gpuCount.Set(gpuCount.Value() - moveGpu)
+	node.Status.Capacity[gpushareutils.CountName] = gpuCount
+
 	gpuCount = node.Status.Allocatable[gpushareutils.CountName]
 	gpuCount.Set(gpuCount.Value() - moveGpu)
+	node.Status.Allocatable[gpushareutils.CountName] = gpuCount
+
 	gpuCount = highestNode.Status.Capacity[gpushareutils.CountName]
 	gpuCount.Set(gpuCount.Value() + moveGpu)
+	highestNode.Status.Capacity[gpushareutils.CountName] = gpuCount
+
 	gpuCount = highestNode.Status.Allocatable[gpushareutils.CountName]
 	gpuCount.Set(gpuCount.Value() + moveGpu)
+	highestNode.Status.Allocatable[gpushareutils.CountName] = gpuCount
 
 	gpuTotalMem := node.Status.Capacity[gpushareutils.ResourceName]
 	moveGpuMem := gpuTotalMem.Value() * moveGpu / oldGpuCount
 	gpuTotalMem.Set(gpuTotalMem.Value() - moveGpuMem)
+	node.Status.Capacity[gpushareutils.ResourceName] = gpuTotalMem
+
 	gpuTotalMem = node.Status.Allocatable[gpushareutils.ResourceName]
 	gpuTotalMem.Set(gpuTotalMem.Value() - moveGpuMem)
+	node.Status.Allocatable[gpushareutils.ResourceName] = gpuTotalMem
+
 	gpuTotalMem = highestNode.Status.Capacity[gpushareutils.ResourceName]
 	gpuTotalMem.Set(gpuTotalMem.Value() + moveGpuMem)
+	highestNode.Status.Capacity[gpushareutils.ResourceName] = gpuTotalMem
+
 	gpuTotalMem = highestNode.Status.Allocatable[gpushareutils.ResourceName]
 	gpuTotalMem.Set(gpuTotalMem.Value() + moveGpuMem)
+	highestNode.Status.Allocatable[gpushareutils.ResourceName] = gpuTotalMem
+
+	//log.Printf("node:\n%v\nhighest node:\n%v", node, highestNode)
 
 	if _, err := plugin.fakeclient.CoreV1().Nodes().Update(context.Background(), node, metav1.UpdateOptions{}); err != nil {
 		return err
@@ -433,6 +490,7 @@ func (plugin *GpuSharePlugin) IswReallocate(node *corev1.Node, pod *corev1.Pod) 
 	}
 
 	// Step 5: update two nodes in open-gpu-share cache
+	log.Printf("ISW reallocate step 5")
 	removeGpuGroup := freeGpuGroup[:moveGpu/2]
 	if err := plugin.cache.GpuNodeRemove(node, removeGpuGroup); err != nil {
 		log.Printf("error: cannot remove GPUs in %s", node.Name)
@@ -443,23 +501,24 @@ func (plugin *GpuSharePlugin) IswReallocate(node *corev1.Node, pod *corev1.Pod) 
 		return err
 	}
 
+	log.Printf("reallocate finished!")
 	return nil
 }
 
 // return neighbors of a node (including itself)
 func (plugin *GpuSharePlugin) getNeighborNames(node *corev1.Node) (neighborNames []string, err error) {
-	iswName, ok := NodeToIsw[node.Name]
+	iswName, ok := plugin.iswConfig.NodeToIsw[node.Name]
 	if !ok {
 		err := errors.New(fmt.Sprintf("node-ISW map error: there is no node named %s in the map", node.Name))
 		log.Printf("getNeighbors error: %v", err)
 		return nil, err
 	}
-	if neighborNames, ok = IswToNode[iswName]; !ok {
+	if neighborNames, ok = plugin.iswConfig.IswToNode[iswName]; !ok {
 		err := errors.New(fmt.Sprintf("ISW-node map error: there is no ISW named %s in the map", iswName))
 		log.Printf("getNeighbors error: %v", err)
 		return nil, err
 	}
-	return IswToNode[iswName], nil
+	return plugin.iswConfig.IswToNode[iswName], nil
 }
 
 // make sure there is no pods running on GPUs which will be removed
@@ -471,6 +530,7 @@ func (plugin *GpuSharePlugin) IswNodeScore(node *corev1.Node, pod *corev1.Pod, e
 	var nodeInfo *gpusharecache.GpuNodeInfo
 	var freeGpu = extraGpu
 	var freeCpu int64
+	log.Printf("score the node %s with %v GPUs, extraGpu = %v", node.Name, gpushareutils.GetGpuCountInNode(node), extraGpu)
 	nodeInfo, err := plugin.cache.GetGpuNodeInfo(node.Name)
 	if err != nil {
 		log.Printf("error when get GpuNodeInfo from cache")
@@ -481,14 +541,16 @@ func (plugin *GpuSharePlugin) IswNodeScore(node *corev1.Node, pod *corev1.Pod, e
 			freeGpu++
 		}
 	}
-	freeCpu = node.Status.Allocatable.Cpu().Value()
+	freeCpu = nodeInfo.GetFreeCpu()
 	if pod != nil {
 		podReq, _ := resourcehelper.PodRequestsAndLimits(pod)
 		freeCpu -= podReq.Cpu().Value()
 	}
 	if freeGpu == 0 {
+		log.Printf("Score: %v, free CPU: %v, free GPU: %v", float64(freeCpu)*simontype.CpuNodeScoreScale, freeCpu, freeGpu)
 		return float64(freeCpu) * simontype.CpuNodeScoreScale, nil
 	}
+	log.Printf("Score: %v, free CPU: %v, free GPU: %v", float64(freeCpu)/float64(freeGpu), freeCpu, freeGpu)
 	return float64(freeCpu) / float64(freeGpu), nil
 }
 
@@ -499,9 +561,15 @@ func (plugin *GpuSharePlugin) FreeGpuGroup(node *corev1.Node) (freeGroup []gpush
 		return nil, err
 	}
 	devices := nodeInfo.GetDevs()
-	for i := 0; i < len(devices); i += 2 {
-		if devices[i].GetUsedGpuMemory() == 0 && devices[i+1].GetUsedGpuMemory() == 0 {
-			freeGroup = append(freeGroup, gpusharecache.GpuGroupId(i/2))
+	existIndex := 0
+	for index := 0; existIndex < len(devices)/2; index += 2 {
+		device0, ok0 := devices[index]
+		device1, ok1 := devices[index+1]
+		if ok0 && ok1 {
+			if device0.GetUsedGpuMemory() == 0 && device1.GetUsedGpuMemory() == 0 {
+				freeGroup = append(freeGroup, gpusharecache.GpuGroupId(index/2))
+			}
+			existIndex++
 		}
 	}
 	return freeGroup, nil

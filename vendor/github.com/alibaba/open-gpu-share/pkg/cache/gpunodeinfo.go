@@ -13,6 +13,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
+	resourcehelper "k8s.io/kubectl/pkg/util/resource"
 )
 
 const (
@@ -26,6 +27,10 @@ type GpuNodeInfo struct {
 	devs           map[int]*DeviceInfo
 	gpuCount       int
 	gpuTotalMemory int64
+	freeCpu        int64
+	totalCpu       int64
+	freeMem        int64
+	totalMem       int64
 	model          string
 	rwmu           *sync.RWMutex
 }
@@ -50,6 +55,10 @@ func NewGpuNodeInfo(node *v1.Node) *GpuNodeInfo {
 		devs:           devMap,
 		gpuCount:       utils.GetGpuCountInNode(node),
 		gpuTotalMemory: utils.GetTotalGpuMemory(node),
+		freeCpu:        utils.GetTotalCpu(node),
+		totalCpu:       utils.GetTotalCpu(node),
+		freeMem:        utils.GetTotalMemory(node),
+		totalMem:       utils.GetTotalMemory(node),
 		model:          cardModel,
 		rwmu:           new(sync.RWMutex),
 	}
@@ -76,8 +85,8 @@ func (n *GpuNodeInfo) GetName() string {
 	return n.name
 }
 
-func (n *GpuNodeInfo) GetDevs() []*DeviceInfo {
-	devs := make([]*DeviceInfo, n.gpuCount)
+func (n *GpuNodeInfo) GetDevs() map[int]*DeviceInfo {
+	devs := make(map[int]*DeviceInfo, n.gpuCount)
 	for i, dev := range n.devs {
 		devs[i] = dev
 	}
@@ -101,9 +110,29 @@ func (n *GpuNodeInfo) GetGpuCount() int {
 	return n.gpuCount
 }
 
+func (n *GpuNodeInfo) GetTotalCpu() int64 {
+	return n.totalCpu
+}
+
+func (n *GpuNodeInfo) GetFreeCpu() int64 {
+	return n.freeCpu
+}
+
+func (n *GpuNodeInfo) GetTotalMemory() int64 {
+	return n.totalMem
+}
+
+func (n *GpuNodeInfo) GetFreeMemory() int64 {
+	return n.freeMem
+}
+
 func (n *GpuNodeInfo) removePod(pod *v1.Pod) {
 	n.rwmu.Lock()
 	defer n.rwmu.Unlock()
+
+	podReq, _ := resourcehelper.PodRequestsAndLimits(pod)
+	n.freeCpu += podReq.Cpu().Value()
+	n.freeMem += podReq.Memory().Value()
 
 	if idl, err := utils.GetGpuIdListFromAnnotation(pod); err == nil {
 		for _, idx := range idl {
@@ -136,6 +165,11 @@ func (n *GpuNodeInfo) addOrUpdatePod(pod *v1.Pod) (added bool) {
 	} else {
 		log.Printf("warn: Pod %s in ns %s has problem with parsing GPU ID %d in node %s, error: %s", pod.Name, pod.Namespace, idl, n.name, err)
 	}
+
+	podReq, _ := resourcehelper.PodRequestsAndLimits(pod)
+	n.freeCpu -= podReq.Cpu().Value()
+	n.freeMem -= podReq.Memory().Value()
+
 	return added
 }
 
@@ -151,13 +185,11 @@ func (n *GpuNodeInfo) Assume(pod *v1.Pod) (allocatable bool) {
 	//log.Printf("debug: AvailableGPUs: %v in node %s", availableGpus, n.name)
 
 	if len(availableGpus) > 0 {
-		for devId := 0; devId < len(n.devs); devId++ {
-			if availableGpu, ok := availableGpus[devId]; ok {
-				if availableGpu >= reqGpuMem {
-					if reqGpuNum -= 1; reqGpuNum <= 0 {
-						allocatable = true
-						break
-					}
+		for _, availableGpu := range availableGpus {
+			if availableGpu >= reqGpuMem {
+				if reqGpuNum -= 1; reqGpuNum <= 0 {
+					allocatable = true
+					break
 				}
 			}
 		}
@@ -254,27 +286,29 @@ func (n *GpuNodeInfo) AllocateGpuId(pod *v1.Pod) (candDevId string, found bool) 
 
 	if reqGpuNum == 1 { // 1-GPU pod. Adopt the original naive packing logic
 		var candGpuMem int64
-		for devId := 0; devId < len(n.devs); devId++ {
-			if idleGpuMem, ok := availableGpus[devId]; ok {
-				if idleGpuMem >= reqGpuMem {
-					if candDevId == "" || idleGpuMem < candGpuMem {
-						candDevId = strconv.Itoa(devId)
-						candGpuMem = idleGpuMem // update to the tightest fit
-						found = true
-					}
+		for devId, idleGpuMem := range availableGpus {
+			if idleGpuMem >= reqGpuMem {
+				if candDevId == "" || idleGpuMem < candGpuMem {
+					candDevId = strconv.Itoa(devId)
+					candGpuMem = idleGpuMem // update to the tightest fit
+					found = true
 				}
 			}
 		}
 	} else { // multi-GPU pod. Greedy algorithm. Trying to pack as many containers onto 1 GPU as possible.
 		var candDevIdList []int
-		devId, reqGpuId := 0, 0
-		for devId < len(n.devs) && reqGpuId < int(reqGpuNum) { // two pointers
-			if idleGpuMem, ok := availableGpus[devId]; ok && idleGpuMem >= reqGpuMem {
+		var reqGpuId = 0
+		for devId, idleGpuMem := range availableGpus {
+			for idleGpuMem >= reqGpuMem {
 				candDevIdList = append(candDevIdList, devId)
-				availableGpus[devId] = idleGpuMem - reqGpuMem
+				idleGpuMem -= reqGpuMem
 				reqGpuId++
-			} else {
-				devId++
+				if int64(reqGpuId) >= reqGpuNum {
+					break
+				}
+			}
+			if int64(reqGpuId) >= reqGpuNum {
+				break
 			}
 		}
 		if reqGpuId == int(reqGpuNum) {

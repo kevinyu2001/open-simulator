@@ -2,6 +2,7 @@ package cache
 
 import (
 	"errors"
+	"log"
 	"sync"
 
 	"github.com/alibaba/open-gpu-share/pkg/utils"
@@ -182,11 +183,16 @@ func (cache *SchedulerCache) GpuNodeAdd(node *v1.Node) error {
 		nodeInfo.gpuCount = utils.GetGpuCountInNode(node)
 		nodeInfo.gpuTotalMemory = utils.GetTotalGpuMemory(node)
 		nodeInfo.node = node
-		currentGpuNum := len(nodeInfo.devs)
-		for index := currentGpuNum; index < nodeInfo.gpuCount; index++ {
-			nodeInfo.devs[index] = newDeviceInfo(index,
-				nodeInfo.gpuTotalMemory/int64(nodeInfo.gpuCount),
-				utils.GetGpuModel(node))
+
+		addGpuNum := nodeInfo.gpuCount - len(nodeInfo.devs)
+		indexPointer := 0
+		for i := 0; i < addGpuNum; indexPointer++ {
+			if dev, ok := nodeInfo.devs[indexPointer]; !ok || dev == nil {
+				nodeInfo.devs[indexPointer] = newDeviceInfo(indexPointer,
+					nodeInfo.gpuTotalMemory/int64(nodeInfo.gpuCount),
+					utils.GetGpuModel(node))
+				i++
+			}
 		}
 	}
 	return nil
@@ -205,20 +211,10 @@ func (cache *SchedulerCache) GpuNodeRemove(node *v1.Node, removeGpuGroup []GpuGr
 		nodeInfo.gpuTotalMemory = utils.GetTotalGpuMemory(node)
 		nodeInfo.node = node
 
-		indexPointer := 0
-		currentGpuNum := len(nodeInfo.devs)
-		for index := 0; index < currentGpuNum; index++ {
-			if !inRemoveNodes(index, removeGpuGroup) {
-				nodeInfo.devs[indexPointer] = nodeInfo.devs[index]
-				nodeInfo.devs[indexPointer].rwmu.Lock()
-				nodeInfo.devs[indexPointer].idx = indexPointer
-				nodeInfo.devs[indexPointer].rwmu.Unlock()
-				indexPointer++
+		for index := range nodeInfo.devs {
+			if inRemoveNodes(index, removeGpuGroup) {
+				delete(nodeInfo.devs, index)
 			}
-		}
-
-		for i := nodeInfo.gpuCount; i < currentGpuNum; i++ {
-			delete(nodeInfo.devs, i)
 		}
 	}
 	return nil
@@ -244,16 +240,18 @@ func (cache *SchedulerCache) ValidateGpuRemove(node *v1.Node, removeGpuGroup []G
 	}
 	for _, groupId := range removeGpuGroup {
 		if deviceInfo, ok := nodeInfo.devs[2*int(groupId)]; !ok {
+			log.Printf("no GPU with id = %v in the node", 2*int(groupId))
 			return false
 		} else {
-			if len(deviceInfo.podMap) != 0 {
+			if len(deviceInfo.podMap) != 0 || deviceInfo.GetUsedGpuMemory() != 0 {
 				return false
 			}
 		}
 		if deviceInfo, ok := nodeInfo.devs[2*int(groupId)+1]; !ok {
+			log.Printf("no GPU with id = %v in the node", 2*int(groupId)+1)
 			return false
 		} else {
-			if len(deviceInfo.podMap) != 0 {
+			if len(deviceInfo.podMap) != 0 || deviceInfo.GetUsedGpuMemory() != 0 {
 				return false
 			}
 		}

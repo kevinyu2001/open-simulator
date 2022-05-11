@@ -1,0 +1,31 @@
+apiVersion: apps/v1
+kind: ReplicaSet
+metadata:
+  labels:
+    app: isw-rs-03
+  name: isw-rs-03
+  namespace: isw-gpu
+  annotations:
+    alibabacloud.com/gpu-mem: 10240Mi
+    alibabacloud.com/gpu-count: "1"
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: isw-deploy-03
+  template:
+    metadata:
+      labels:
+        app: isw-deploy-03
+    spec:
+      containers:
+        - image: tensorflow:latest
+          name: main
+          resources:
+            limits:
+              cpu: 32
+              memory: 18432Mi
+            requests:
+              cpu: 32
+              memory: 18432Mi
+      hostNetwork: true

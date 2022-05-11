@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: isw-pod-01
+  namespace: isw-gpu
+  annotations:
+    alibabacloud.com/gpu-mem: 10240Mi
+    alibabacloud.com/gpu-count: "1"
+spec:
+  containers:
+    - image: tensorflow:latest
+      name: main
+      resources:
+        limits:
+          cpu: 100
+          memory: 9216Mi
+        requests:
+          cpu: 100
+          memory: 9216Mi

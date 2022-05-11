@@ -25,8 +25,32 @@ func GetGpuCountInNode(node *v1.Node) int {
 	return int(val.Value())
 }
 
+func GetTotalCpu(node *v1.Node) int64 {
+	val, ok := node.Status.Allocatable[IswCpu]
+	if !ok {
+		return 0
+	}
+	return val.Value()
+}
+
+func GetTotalMemory(node *v1.Node) int64 {
+	val, ok := node.Status.Allocatable[IswMemory]
+	if !ok {
+		return 0
+	}
+	return val.Value()
+}
+
 func GetGpuModel(node *v1.Node) string {
 	val, ok := node.ObjectMeta.Labels[ModelName]
+	if !ok {
+		return "N/A"
+	}
+	return val
+}
+
+func GetIswName(node *v1.Node) string {
+	val, ok := node.ObjectMeta.Labels[IswName]
 	if !ok {
 		return "N/A"
 	}

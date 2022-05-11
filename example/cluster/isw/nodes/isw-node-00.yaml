@@ -1,0 +1,27 @@
+apiVersion: v1
+kind: Node
+metadata:
+  labels:
+    beta.kubernetes.io/arch: intel
+    beta.kubernetes.io/os: linux
+    kubernetes.io/arch: intel
+    kubernetes.io/hostname: isw-node-00
+    kubernetes.io/os: linux
+    node-role.kubernetes.io/master: ''
+    alibabacloud.com/gpu-card-model: V100
+    node-ip: 192.168.0.100
+    alibabacloud.com/isw-name: isw-test
+  name: isw-node-00
+status:
+  allocatable:
+    alibabacloud.com/gpu-count: '0'
+    alibabacloud.com/gpu-mem: 0Mi
+    cpu: 128
+    memory: 512000Mi
+    pods: '200'
+  capacity:
+    alibabacloud.com/gpu-count: '0'
+    alibabacloud.com/gpu-mem: 0Mi
+    cpu: 128
+    memory: 512000Mi
+    pods: '200'
